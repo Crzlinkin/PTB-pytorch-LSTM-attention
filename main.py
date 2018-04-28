@@ -8,11 +8,11 @@ from torch.autograd import Variable
 
 import data
 import rnn_attention
-import model
+#import model
 
 
 parser = argparse.ArgumentParser(description='PTB RNN/LSTM Language Model: Main Function')
-parser.add_argument('--data', type=str, default='./data/ptb',
+parser.add_argument('--data', type=str, default='./data/wikitext-2',
                     help='location of the data corpus')
 parser.add_argument('--model', type=str, default='LSTM',
                     help='type of recurrent net (RNN_TANH, RNN_RELU, LSTM, GRU)')
@@ -20,7 +20,7 @@ parser.add_argument('--emsize', type=int, default=100,
                     help='size of word embeddings')
 parser.add_argument('--nhid', type=int, default=128,
                     help='number of hidden units per layer')
-parser.add_argument('--nlayers', type=int, default=1,
+parser.add_argument('--nlayers', type=int, default=2,
                     help='number of layers')
 parser.add_argument('--lr', type=float, default=20,
                     help='initial learning rate')
@@ -28,7 +28,7 @@ parser.add_argument('--clip', type=float, default=0.25,
                     help='gradient clipping')
 parser.add_argument('--epochs', type=int, default=5,
                     help='upper epoch limit')
-parser.add_argument('--batch_size', type=int, default=32, metavar='N',
+parser.add_argument('--batch_size', type=int, default=20, metavar='N',
                     help='batch size')
 parser.add_argument('--bptt', type=int, default=35,
                     help='sequence length')
@@ -119,13 +119,18 @@ if args.cuda:
 # Training code
 ###############################################################################
 
+# def repackage_hidden(h):
+#     """Wraps hidden states in new Variables, to detach them from their history."""
+#     if type(h) == Variable:
+#         return Variable(h.data)
+#     else:
+#         return tuple(repackage_hidden(v) for v in h)
 def repackage_hidden(h):
-    """Wraps hidden states in new Variables, to detach them from their history."""
-    if type(h) == Variable:
-        return Variable(h.data)
+    """Wraps hidden states in new Tensors, to detach them from their history."""
+    if isinstance(h, torch.Tensor):
+        return h.detach()
     else:
         return tuple(repackage_hidden(v) for v in h)
-
 
 # get_batch subdivides the source data into chunks of length args.bptt.
 # If source is equal to the example output of the batchify function, with
@@ -147,14 +152,14 @@ def get_batch(source, i, evaluation=False):
 def evaluate(data_source):
     # Turn on evaluation mode which disables dropout.
     model.eval()
-    total_loss = 0
+    total_loss = 0.
     ntokens = len(corpus.dictionary)
     hidden = model.init_hidden(eval_batch_size)
     for i in range(0, data_source.size(0) - 1, args.bptt):
         data, targets = get_batch(data_source, i, evaluation=True)
         output, hidden = model(data, hidden)
         output_flat = output.view(-1, ntokens)
-        total_loss += len(data) * criterion(output_flat, targets).data
+        total_loss += len(data) * criterion(output_flat, targets).item()
         hidden = repackage_hidden(hidden)
     return total_loss[0] / len(data_source)
 
@@ -162,7 +167,7 @@ def evaluate(data_source):
 def train():
     # Turn on training mode which enables dropout.
     model.train()
-    total_loss = 0
+    total_loss = 0.
     start_time = time.time()
     ntokens = len(corpus.dictionary)
     hidden = model.init_hidden(args.batch_size)
@@ -178,17 +183,18 @@ def train():
         loss.backward()
 
         # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
-        torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
+        #torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
         #print(model.state_dict())
         #print("Done***")
 
         for n,p in model.named_parameters():
             p.data.add_(-lr, p.grad.data)
 
-        total_loss += loss.data
+        total_loss += loss.item()
 
         if batch % args.log_interval == 0 and batch > 0:
-            cur_loss = total_loss[0] / args.log_interval
+            cur_loss = total_loss / args.log_interval
             elapsed = time.time() - start_time
             print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:02.2f} | ms/batch {:5.2f} | '
                     'loss {:5.2f} | perplexity {:8.2f}'.format(
