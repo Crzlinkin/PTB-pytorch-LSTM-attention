@@ -5,13 +5,11 @@ import math
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
-
 import data
 import rnn_attention
 #import model
 
-
-parser = argparse.ArgumentParser(description='PTB RNN/LSTM Language Model: Main Function')
+parser = argparse.ArgumentParser(description='PyTorch Wikitext-2 RNN/LSTM Language Model')
 parser.add_argument('--data', type=str, default='./data/wikitext-2',
                     help='location of the data corpus')
 parser.add_argument('--model', type=str, default='LSTM',
@@ -38,18 +36,16 @@ parser.add_argument('--tied', action='store_true',
                     help='tie the word embedding and softmax weights')
 parser.add_argument('--seed', type=int, default=1111,
                     help='random seed')
-parser.add_argument('--log_interval', type=int, default=200, metavar='N',
+parser.add_argument('--cuda', action='store_true',
+                    help='use CUDA')
+parser.add_argument('--log-interval', type=int, default=200, metavar='N',
                     help='report interval')
 parser.add_argument('--save', type=str,  default='model.pt',
                     help='path to save the final model')
-
-parser.add_argument('--att', action='store_true',
-                    help='attention layers')
-
-parser.add_argument('--att_width', type=int,  default=3,
-                    help='attention layer width')
-parser.add_argument('--cuda', action='store_true',
-                    help='use CUDA')
+parser.add_argument('--att',action='store_true',
+                    help='attention layerS')
+parser.add_argument('--att_width',type=int,default=3,
+                    help='attention width')
 args = parser.parse_args()
 
 # check attention width and sequence length
@@ -59,14 +55,13 @@ except KeyError:
     raise ValueError("""attention width should be less than sequence length,
                         att_width < bptt""")
 
-
+# Set the random seed manually for reproducibility.
+torch.manual_seed(args.seed)
 if torch.cuda.is_available():
     if not args.cuda:
         print("WARNING: You have a CUDA device, so you should probably run with --cuda")
-    else:
-        torch.cuda.manual_seed(args.seed)
-# Set the random seed manually for reproducibility.
-torch.manual_seed(args.seed)
+
+device = torch.device("cuda" if args.cuda else "cpu")
 
 ###############################################################################
 # Load data
@@ -93,9 +88,7 @@ def batchify(data, bsz):
     data = data.narrow(0, 0, nbatch * bsz)
     # Evenly divide the data across the bsz batches.
     data = data.view(bsz, -1).t().contiguous()
-    if args.cuda:
-        data = data.cuda()
-    return data
+    return data.to(device)
 
 eval_batch_size = 10
 train_data = batchify(corpus.train, args.batch_size)
@@ -107,30 +100,21 @@ test_data = batchify(corpus.test, eval_batch_size)
 ###############################################################################
 
 ntokens = len(corpus.dictionary)
-#model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout,
-#                               args.tied)
-model = rnn_attention.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout,
-                               args.tied, args.att, args.att_width, args.cuda)
+#model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.tied).to(device)
+model = rnn_attention.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.tied,args.att,args.att_width).to(device)
 criterion = nn.CrossEntropyLoss()
-if args.cuda:
-    model.cuda()
 
 ###############################################################################
 # Training code
 ###############################################################################
 
-# def repackage_hidden(h):
-#     """Wraps hidden states in new Variables, to detach them from their history."""
-#     if type(h) == Variable:
-#         return Variable(h.data)
-#     else:
-#         return tuple(repackage_hidden(v) for v in h)
 def repackage_hidden(h):
     """Wraps hidden states in new Tensors, to detach them from their history."""
     if isinstance(h, torch.Tensor):
         return h.detach()
     else:
         return tuple(repackage_hidden(v) for v in h)
+
 
 # get_batch subdivides the source data into chunks of length args.bptt.
 # If source is equal to the example output of the batchify function, with
@@ -142,10 +126,10 @@ def repackage_hidden(h):
 # by the batchify function. The chunks are along dimension 0, corresponding
 # to the seq_len dimension in the LSTM.
 
-def get_batch(source, i, evaluation=False):
+def get_batch(source, i):
     seq_len = min(args.bptt, len(source) - 1 - i)
-    data = Variable(source[i:i+seq_len], volatile=evaluation)
-    target = Variable(source[i+1:i+1+seq_len].view(-1))
+    data = source[i:i+seq_len]
+    target = source[i+1:i+1+seq_len].view(-1)
     return data, target
 
 
@@ -155,13 +139,14 @@ def evaluate(data_source):
     total_loss = 0.
     ntokens = len(corpus.dictionary)
     hidden = model.init_hidden(eval_batch_size)
-    for i in range(0, data_source.size(0) - 1, args.bptt):
-        data, targets = get_batch(data_source, i, evaluation=True)
-        output, hidden = model(data, hidden)
-        output_flat = output.view(-1, ntokens)
-        total_loss += len(data) * criterion(output_flat, targets).item()
-        hidden = repackage_hidden(hidden)
-    return total_loss[0] / len(data_source)
+    with torch.no_grad():
+        for i in range(0, data_source.size(0) - 1, args.bptt):
+            data, targets = get_batch(data_source, i)
+            output, hidden = model(data, hidden)
+            output_flat = output.view(-1, ntokens)
+            total_loss += len(data) * criterion(output_flat, targets).item()
+            hidden = repackage_hidden(hidden)
+    return total_loss / len(data_source)
 
 
 def train():
@@ -178,17 +163,12 @@ def train():
         hidden = repackage_hidden(hidden)
         model.zero_grad()
         output, hidden = model(data, hidden)
-        #print(output.size())
         loss = criterion(output.view(-1, ntokens), targets)
         loss.backward()
 
         # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
-        #torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
-        #print(model.state_dict())
-        #print("Done***")
-
-        for n,p in model.named_parameters():
+        torch.nn.utils.clip_grad_norm(model.parameters(), args.clip)
+        for p in model.parameters():
             p.data.add_(-lr, p.grad.data)
 
         total_loss += loss.item()
@@ -197,7 +177,7 @@ def train():
             cur_loss = total_loss / args.log_interval
             elapsed = time.time() - start_time
             print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:02.2f} | ms/batch {:5.2f} | '
-                    'loss {:5.2f} | perplexity {:8.2f}'.format(
+                    'loss {:5.2f} | ppl {:8.2f}'.format(
                 epoch, batch, len(train_data) // args.bptt, lr,
                 elapsed * 1000 / args.log_interval, cur_loss, math.exp(cur_loss)))
             total_loss = 0
@@ -208,7 +188,6 @@ lr = args.lr
 best_val_loss = None
 
 # At any point you can hit Ctrl + C to break out of training early.
-
 try:
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
@@ -216,7 +195,7 @@ try:
         val_loss = evaluate(val_data)
         print('-' * 89)
         print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | '
-                'valid perplexity {:8.2f}'.format(epoch, (time.time() - epoch_start_time),
+                'valid ppl {:8.2f}'.format(epoch, (time.time() - epoch_start_time),
                                            val_loss, math.exp(val_loss)))
         print('-' * 89)
         # Save the model if the validation loss is the best we've seen so far.
@@ -227,7 +206,6 @@ try:
         else:
             # Anneal the learning rate if no improvement has been seen in the validation dataset.
             lr /= 4.0
-        lr /= 2.0
 except KeyboardInterrupt:
     print('-' * 89)
     print('Exiting from training early')
@@ -235,10 +213,13 @@ except KeyboardInterrupt:
 # Load the best saved model.
 with open(args.save, 'rb') as f:
     model = torch.load(f)
+    # after load the rnn params are not a continuous chunk of memory
+    # this makes them a continuous chunk, and will speed up forward pass
+    model.rnn.flatten_parameters()
 
 # Run on test data.
 test_loss = evaluate(test_data)
 print('=' * 89)
-print('| End of training | test loss {:5.2f} | test perplexity {:8.2f}'.format(
+print('| End of training | test loss {:5.2f} | test ppl {:8.2f}'.format(
     test_loss, math.exp(test_loss)))
 print('=' * 89)
